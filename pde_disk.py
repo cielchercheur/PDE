@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.animation import FuncAnimation
 
 # =============================================================================
 #                               PARAMETERS
@@ -19,9 +20,11 @@ DT = 0.0004          # Time step (must be small for stability)
 NT = 12500           # Number of time steps
 
 # Moving Source
-MOVING_SOURCE = True
-#MOVING_SOURCE = False
-OMEGA = 5.0         # Angular speed (rad/s)
+#SOURCE_TYPE = "ring"
+SOURCE_TYPE = "moving_source"
+#SOURCE_TYPE = "stable_source"
+
+OMEGA = 5.0          # Angular speed (rad/s)
 TS = 50.0            # Source temperature scale
 RING_RADIUS = 3.0    # Radius where the source moves (mid-radius)
 
@@ -40,6 +43,7 @@ T0 = 0.0              # Initial temperature scale
 # Visualization
 V_MIN = 0.0           # Colorbar minimum
 V_MAX = 80.0          # Colorbar maximum
+PLOT_EVERY = 50       # Plot every Nth time step
 # =============================================================================
 
 def solve_annulus_diffusion():
@@ -76,10 +80,11 @@ def solve_annulus_diffusion():
 
     print(f"Starting time evolution for {NT} steps...")
 
+    yield rho, T.copy(), 0.0
 
     for n in range(NT):
         T_inner = T[1:-1, :]
-        
+    
         # Vectorized Laplacian
         T_jp = np.roll(T_inner, -1, axis=1)
         T_jm = np.roll(T_inner, 1, axis=1)
@@ -90,17 +95,19 @@ def solve_annulus_diffusion():
         T_new_inner = T_inner + radial + angular
 
         # Moving source logic
-        if MOVING_SOURCE:
+        if SOURCE_TYPE == "moving_source":
             t = n * DT
             theta_s = (OMEGA * t) % (2.0 * np.pi)
             js = int(round(theta_s / dth)) % NTHETA
             T_new_inner[isrc-1, js] += DT * (OMEGA * TS) / cell_area
-        else:
+        elif SOURCE_TYPE == "stable_source":
             theta_s = 0.0
             js = int(round(theta_s / dth)) % NTHETA
-
-            add = DT * Q # Q is a heating rate (temp/time), so DT*Q is a temperature change
+            add = DT * Q / cell_area
             T_new_inner[isrc - 1, js] += add
+        elif SOURCE_TYPE == "ring":
+            add = DT * Q / cell_area
+            T_new_inner[isrc - 1, :] += add
 
         T[1:-1, :] = T_new_inner
 
@@ -112,38 +119,60 @@ def solve_annulus_diffusion():
             T[0, :] = (4 * T[1, :] - T[2, :]) / 3
             T[NR, :] = (4 * T[NR - 1, :] - T[NR - 2, :]) / 3
 
-    return rho, T
+        if (n + 1) % PLOT_EVERY == 0:
+            yield rho, T, (n + 1) * DT
 
 def main():
-    # 1. Run Solver
-    print("Running simulation...")
-    radii, Temp_grid = solve_annulus_diffusion()
+    # 1. Initialize Generator
+    print("Initializing simulation...")
+    sim_gen = solve_annulus_diffusion()
+    
+    # Get initial state to setup the plot
+    rho, T, t0 = next(sim_gen)
 
-    # 2. Visualization
-    print("Plotting results...")
+    # 2. Visualization Setup
+    print("Setting up animation...")
     theta_vals = np.linspace(0, 2 * np.pi, NTHETA + 1)
-    r_vals = np.array(radii)
+    r_vals = np.array(rho)
 
     R_mesh, THETA_mesh = np.meshgrid(r_vals, theta_vals)
     X = R_mesh * np.cos(THETA_mesh)
     Y = R_mesh * np.sin(THETA_mesh)
 
-    # Wrap data: Append first angular column to the end to close the circle (NTHETA + 1)
-    Z_wrapped = np.concatenate([Temp_grid, Temp_grid[:, [0]]], axis=1)
-    Z = Z_wrapped.T # Transpose to (Ntheta+1, Nr+1)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    # Initial Plot
+    Z_wrapped = np.concatenate([T, T[:, [0]]], axis=1)
+    Z = Z_wrapped.T 
+    
+    quad = ax.pcolormesh(X, Y, Z, cmap='inferno', shading='gouraud', vmin=V_MIN, vmax=V_MAX)
+    plt.colorbar(quad, label='Temperature')
+    ax.set_aspect('equal')
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    
+    title_text = ax.set_title(f"2D Heat Diffusion in Annulus (t = {t0:.3f}s)")
 
-    plt.figure(figsize=(8, 6))
-    plt.pcolormesh(X, Y, Z, cmap='inferno', shading='gouraud')
-    plt.clim(V_MIN, V_MAX)
-    plt.colorbar(label='Temperature')
-    plt.title(f"2D Heat Diffusion in Annulus (t = {DT * NT:.3f}s)")
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.axis('equal')
-    plt.savefig("annulus_diffusion_dirichlet.png")
+    def update(frame_data):
+        rho_frame, T_frame, t_frame = frame_data
+        
+        # Wrap data
+        Z_wrapped_f = np.concatenate([T_frame, T_frame[:, [0]]], axis=1)
+        Z_f = Z_wrapped_f.T
+        
+        quad.set_array(Z_f.ravel())
+        title_text.set_text(f"2D Heat Diffusion in Annulus (t = {t_frame:.3f}s)")
+        return quad, title_text
 
-    plt.show()
-
+    print("Generating video... (this may take a while)")
+    anim = FuncAnimation(fig, update, frames=sim_gen, blit=False, cache_frame_data=False)
+    
+    # Save video
+    try:
+        anim.save("annulus_diffusion.gif", writer='pillow', fps=30)
+        print("Video saved as annulus_diffusion.gif")
+    except Exception as e2:
+            print(f"Error saving gif: {e2}")
 
 if __name__ == "__main__":
     main()
